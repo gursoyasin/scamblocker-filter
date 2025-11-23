@@ -1,14 +1,9 @@
-// --- ScamBlocker Network Filter API (Vercel Serverless) ---
-// Works with iOS MessageFilterExtension
-
 import fetch from "node-fetch";
 
-// MARK: - GOOGLE SAFE BROWSING
-async function checkSafeBrowsing(url) {
+async function checkGoogle(url) {
   try {
     const key = process.env.SAFE_BROWSING_KEY;
-    const endpoint =
-      "https://safebrowsing.googleapis.com/v4/threatMatches:find?key=" + key;
+    const endpoint = `https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${key}`;
 
     const body = {
       client: { clientId: "scamblocker", clientVersion: "1.0" },
@@ -28,73 +23,74 @@ async function checkSafeBrowsing(url) {
 
     const data = await res.json();
     return data.matches ? true : false;
+
   } catch (e) {
-    console.error("Google SB error:", e);
+    console.log("Google Safe Browsing error:", e);
     return false;
   }
 }
 
-// MARK: - VIRUSTOTAL URL CHECK
 async function checkVirusTotal(url) {
   try {
     const key = process.env.VT_KEY;
-    const id = Buffer.from(url).toString("base64").replace(/\//g, "_");
+    const encoded = Buffer.from(url).toString("base64").replace(/\//g, "_");
+    const vtURL = `https://www.virustotal.com/api/v3/urls/${encoded}`;
 
-    const res = await fetch(
-      `https://www.virustotal.com/api/v3/urls/${id}`,
-      { headers: { "x-apikey": key } }
-    );
+    const res = await fetch(vtURL, {
+      headers: { "x-apikey": key }
+    });
 
     const data = await res.json();
     const stats = data.data?.attributes?.last_analysis_stats;
 
-    if (!stats) return false;
-
     return stats.malicious > 0 || stats.suspicious > 0;
+
   } catch (e) {
     console.log("VirusTotal error:", e);
     return false;
   }
 }
 
-// MARK: - DOMAIN KEYWORD CHECK
-function domainIsRisk(url) {
+function domainRisk(url) {
   const lowered = url.toLowerCase();
   return (
     lowered.includes("bank") ||
-    lowered.includes("ziraat") ||
-    lowered.includes("vakif") ||
-    lowered.includes("isbank") ||
     lowered.includes("kargo") ||
-    lowered.includes("edevlet") ||
     lowered.includes("update") ||
-    lowered.includes("login")
+    lowered.includes("e-devlet") ||
+    lowered.includes("edevlet")
   );
 }
 
-// MARK: - MAIN API HANDLER
 export default async function handler(req, res) {
-  const { url } = req.body || {};
+  try {
+    const message = req.body?.message || "";
 
-  if (!url) {
-    return res.status(400).json({ error: "URL missing" });
+    // URL çıkar
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const found = message.match(urlRegex);
+    const url = found ? found[0] : null;
+
+    if (!url) {
+      return res.status(200).json({ result: "no_url" });
+    }
+
+    const google = await checkGoogle(url);
+    const vt = await checkVirusTotal(url);
+    const domain = domainRisk(url);
+
+    const isDanger = google || vt || domain;
+
+    return res.status(200).json({
+      url,
+      google,
+      vt,
+      domain,
+      danger: isDanger
+    });
+
+  } catch (e) {
+    console.error("Handler error:", e);
+    return res.status(500).json({ error: "server_error" });
   }
-
-  console.log("Incoming URL:", url);
-
-  const sb = await checkSafeBrowsing(url);
-  const vt = await checkVirusTotal(url);
-  const keyword = domainIsRisk(url);
-
-  const highRisk = sb || vt || keyword;
-
-  return res.status(200).json({
-    success: true,
-    url,
-    safeBrowsing: sb,
-    virusTotal: vt,
-    keywordFlag: keyword,
-    riskLevel: highRisk ? "high" : "low",
-    score: highRisk ? 100 : 0,
-  });
 }
